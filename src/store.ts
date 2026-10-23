@@ -11,7 +11,7 @@
 import type { Database as DatabaseInstance } from "better-sqlite3";
 import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
-import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
+import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, fstatSync, closeSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -214,10 +214,53 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
+ * Owner records for a DB: `<db>.owners/<pid>`, one empty file per process that
+ * has the DB open. Per-project content DBs are shared by every session of the
+ * project, so a single PID is not enough.
+ */
+function ownersDir(dbPath: string): string {
+  return `${dbPath}.owners`;
+}
+
+/** In-memory and URI databases have no file next to which to keep records. */
+function isFileDB(dbPath: string): boolean {
+  return dbPath !== "" && dbPath !== ":memory:" && !dbPath.startsWith("file:");
+}
+
+function registerOwner(dbPath: string): void {
+  if (!isFileDB(dbPath)) return;
+  try {
+    mkdirSync(ownersDir(dbPath), { recursive: true });
+    writeFileSync(join(ownersDir(dbPath), String(process.pid)), "");
+  } catch { /* best effort */ }
+}
+
+function unregisterOwner(dbPath: string): void {
+  if (!isFileDB(dbPath)) return;
+  try { unlinkSync(join(ownersDir(dbPath), String(process.pid))); } catch { /* ignore */ }
+}
+
+/** True when a live process has the DB open. Drops the records of dead PIDs. */
+function hasLiveOwner(dbPath: string): boolean {
+  let live = false;
+  let entries: string[];
+  try { entries = readdirSync(ownersDir(dbPath)); } catch { return false; }
+  for (const entry of entries) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (isProcessAlive(pid)) live = true;
+    else try { unlinkSync(join(ownersDir(dbPath), entry)); } catch { /* ignore */ }
+  }
+  return live;
+}
+
+/**
  * Clean up stale per-project content store DBs older than maxAgeDays.
  * Scans the given directory for *.db files and checks mtime.
- * Also detects zombie processes holding WAL locks — if a WAL file exists
- * but the owning PID is dead, the DB files are cleaned up regardless of age.
+ * A DB with a non-empty WAL that has been idle for over an hour is also
+ * cleaned up, regardless of age, unless a live process has registered as its
+ * owner (`<db>.owners/<pid>`, see registerOwner). An idle session keeps its WAL
+ * until the next checkpoint, so WAL age alone does not prove the owner is dead.
  */
 export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): number {
   let cleaned = 0;
@@ -228,6 +271,9 @@ export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): 
     for (const file of files) {
       try {
         const filePath = join(contentDir, file);
+        // Never delete a DB under a live connection: every later write in that
+        // session would fail with SQLITE_IOERR ("disk I/O error").
+        if (hasLiveOwner(filePath)) continue;
         const mtime = statSync(filePath).mtimeMs;
         let shouldClean = mtime < cutoff;
 
@@ -252,6 +298,7 @@ export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): 
           for (const suffix of ["", "-wal", "-shm"]) {
             try { unlinkSync(filePath + suffix); } catch { /* ignore */ }
           }
+          try { rmSync(ownersDir(filePath), { recursive: true, force: true }); } catch { /* ignore */ }
           cleaned++;
         }
       } catch { /* ignore per-file errors */ }
@@ -444,6 +491,7 @@ export class ContentStore {
       }
     }
     this.#db = db;
+    registerOwner(this.#dbPath);
     this.#initSchema();
     this.#prepareStatements();
   }
@@ -453,9 +501,11 @@ export class ContentStore {
     try {
       this.#db.close();
     } catch { /* ignore */ }
+    unregisterOwner(this.#dbPath);
     for (const suffix of ["", "-wal", "-shm"]) {
       try { unlinkSync(this.#dbPath + suffix); } catch { /* ignore */ }
     }
+    try { rmSync(ownersDir(this.#dbPath), { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
   // ── Schema ──
@@ -1615,6 +1665,7 @@ export class ContentStore {
   close(): void {
     this.#optimizeFTS(); // defragment before close
     closeDB(this.#db); // WAL checkpoint before close — important for persistent DBs
+    unregisterOwner(this.#dbPath);
   }
 
   // ── Vocabulary Extraction ──
