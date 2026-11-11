@@ -2360,7 +2360,7 @@ describe("PRD-v2 section 10: saving on live payload shapes", () => {
     assert.ok(text.includes("ctx_search("));
   });
 
-  for (const name of ["caveman_retrieve", "headroom_retrieve", "mcp__recovery__caveman_retrieve"]) {
+  for (const name of ["caveman_retrieve", "headroom_retrieve", "mcp:recovery:caveman_retrieve", "mcp__recovery__caveman_retrieve"]) {
     test(`pi exact recovery output reaches the caller whole: ${name}`, async (t) => {
       const { repo, big } = sandbox(t);
       const { handlers, ctx } = await piHandlers(repo);
