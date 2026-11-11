@@ -42,6 +42,8 @@ export const REPLACE_TRIGGER_BYTES = readReplaceTrigger(process.env[REPLACE_TRIG
 // PostToolUse lets it through whole. Claude Code, Pi, Gemini: offset/limit; VS Code read_file and Copilot view map to them.
 export const RANGE_READ_TOOLS = Object.freeze(["Read", "view"]);
 export const READ_RANGE_KEYS = Object.freeze(["offset", "limit", "view_range"]);
+// These tools restore previously compacted text. Replacing their result with another handle defeats recovery.
+export const EXACT_RECOVERY_TOOLS = Object.freeze(["caveman_retrieve", "headroom_retrieve"]);
 export const REPLACE_RETURN_BYTES = 96; // D-M7-SV-3: was 512 (D-M7-SV-2), 1024 before; sweeps in DEVIATIONS
 // D-M2-JSON-1: a parser-found shape digest (schema, counts, whole rows) has its own budget, independent of the handle line.
 export const SHAPE_RETURN_BYTES = 256;

@@ -2360,6 +2360,35 @@ describe("PRD-v2 section 10: saving on live payload shapes", () => {
     assert.ok(text.includes("ctx_search("));
   });
 
+  for (const name of ["caveman_retrieve", "headroom_retrieve", "mcp__recovery__caveman_retrieve"]) {
+    test(`pi exact recovery output reaches the caller whole: ${name}`, async (t) => {
+      const { repo, big } = sandbox(t);
+      const { handlers, ctx } = await piHandlers(repo);
+      const content = [{ type: "text", text: big }];
+      const result = await handlers.tool_result({ type: "tool_result", toolCallId: "recovery-1", toolName: name,
+        input: { recovery_handle: "synthetic-recovery" }, content, isError: false, details: undefined }, ctx);
+      assert.equal(result, undefined, "retrieving full text must not replace it with another search pointer");
+      assert.equal(content[0].text, big, "the original recovery result is not mutated");
+    });
+  }
+  test("Claude MCP exact recovery output is not replaced", async (t) => {
+    const { repo, big, env } = sandbox(t);
+    const result = await handleHook("claude-code", { session_id: "recovery-2", cwd: repo,
+      hook_event_name: "PostToolUse", tool_name: "mcp__recovery__headroom_retrieve",
+      tool_input: { cache_id: "synthetic-recovery" }, tool_response: big }, env);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "", "an allow keeps the host's exact recovery result");
+  });
+  for (const name of ["search_retrieve", "other_caveman_retrieve", "caveman_retrieve_extra", "mcp::caveman_retrieve", "mcp____caveman_retrieve"]) {
+    test(`other large retrieval tools still use normal replacement: ${name}`, async (t) => {
+      const { repo, big } = sandbox(t);
+      const { handlers, ctx } = await piHandlers(repo);
+      const result = await handlers.tool_result({ type: "tool_result", toolCallId: "retrieval-3",
+        toolName: name, input: { query: "synthetic query" },
+        content: [{ type: "text", text: big }], isError: false, details: undefined }, ctx);
+      assert.ok(result?.content[0].text.includes("ctx_search("));
+    });
+  }
   // D-R41-READ-OFFSET-1 (#1314): every replace host's own bounded read reaches the model whole. Payloads: pi 1.4.0 read
   // {path, offset, limit}; gemini-cli 0.65.0 read_file {file_path, offset, limit}; copilot-cli view {path, view_range}.
   test("pi tool_result of a bounded `read` (offset/limit) is not replaced (#1314)", async (t) => {
